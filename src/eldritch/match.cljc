@@ -416,7 +416,7 @@
 (defmacro ^:private invoke
   [f & args]
   `(if (nil? ~f)
-     (throw (Exception. "No matching impl"))
+     (throw (Exception. (str "No matching impl " ~@(interpose \space args))))
      (.invoke ~f ~@args)))
 
 (defn specificity
@@ -526,20 +526,35 @@
 
 (defmacro define
   ([name] `(get-define-fn '~(qualify name)))
-  ([name formals & body]
-   (let [actuals
-         (if-not (neg? (.indexOf formals '&))
-           (concat (repeatedly (- (count formals) 2) gensym) ['& (gensym)])
-           (repeatedly (count formals) gensym))]
-     `(let [f# (get-define-fn '~(qualify name))]
-        (add-impl f# '~formals (fn [~@actuals] (match [~@(remove #{'&} actuals)] [~@(remove #{'&} formals)] (do ~@body))))
-        (def ~name f#)))))
+  ([name & df]
+   (cond
+     (every? seq? df)
+     (cons
+      `do
+      (map
+       (fn [df]
+         `(define ~name ~@df))
+       df))
+
+     (vector? (first df))
+     (let [formals (first df)
+           body (rest df)
+           actuals
+           (if-not (neg? (.indexOf formals '&))
+             (concat (repeatedly (- (count formals) 2) gensym) ['& (gensym)])
+             (repeatedly (count formals) gensym))]
+       `(let [f# (get-define-fn '~(qualify name))]
+          (add-impl f# '~formals (fn [~@actuals] (match [~@(remove #{'&} actuals)] [~@(remove #{'&} formals)] (do ~@body))))
+          (def ~name f#)))
+
+     :else (throw (Exception. "Malformed define")))))
 
 
-; (define fibb [0] 1)
-; (define fibb [1] 1)
-; ; (define fibb [!neg?] (throw (Exception. "Undefined fibbonacci for negative input")))
-; (define fibb [n] (+ (fibb (- n 1)) (fibb (- n 2))))
+
+(define fibb [0] 1)
+(define fibb [1] 1)
+; (define fibb [!neg?] (throw (Exception. "Undefined fibbonacci for negative input")))
+(define fibb [n] (+ (fibb (- n 1)) (fibb (- n 2))))
 ;
 ;
 ; (defn fizzbuzz

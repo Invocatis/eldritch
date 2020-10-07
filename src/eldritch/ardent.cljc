@@ -44,6 +44,9 @@
 
 (declare typeof)
 
+(defonce constructor-protocol
+  (defprotocol IConstructor))
+
 (defmacro ->Constructor
   [parent name args]
   `(let [r# (reify
@@ -51,6 +54,7 @@
               ~(if (zero? (count args))
                  `(invoke [this#] this#)
                  `(invoke [this# ~@args] (with-meta (~(symbol (str name "$TYPE.")) nil ~@args) (meta this#))))
+              IConstructor
               Object
               (toString [_#] (str '~name))
               (equals [this# that#] (= (str this#) (str that#))))]
@@ -59,6 +63,10 @@
        [_# writer#]
        (print-simple (str ~name) writer#))
      r#))
+
+(defmacro constructor?
+  [any]
+  `(instance? eldritch.ardent.IConstructor ~any))
 
 (defn typeof
   [val]
