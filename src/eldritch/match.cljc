@@ -8,8 +8,13 @@
 (defn variable?
   [any]
   (and (symbol? any)
-       (not= '& any)))
+       (not= '& any)
+       (nil? (namespace any))))
        ; (not (uppercase-letter? (first (name any)))) #_(= \? (first (name any)))))
+
+(defn qualify
+  [sym]
+  (symbol (name (ns-name *ns*)) (name sym)))
 
 (defn invoke?
   [any]
@@ -60,9 +65,6 @@
                          (apply runtime-match (conj continuation environment))
                          true))
 
-                  (= `unquote (first pattern))
-                  (runtime-match (eval (second pattern)) target continuation environment)
-
                   (-> (first pattern) meta ::...)
                   (if-not (empty? continuation)
                     (and
@@ -95,8 +97,6 @@
                   (empty? pattern)
                   `(empty? ~target)
 
-                  (= `unquote (first pattern))
-                  `(runtime-match ~(second pattern) ~target nil nil)
 
                   (-> (first pattern) meta ::...)
                   true
@@ -149,6 +149,9 @@
                    (= pattern '_)
                    (apply runtime-match (conj continuation environment))
 
+                   (::unquote (meta pattern))
+                   (runtime-match (eval pattern) target continuation environment)
+
                    (contains? environment pattern)
                    (runtime-match (get environment pattern) target continuation environment)
 
@@ -157,7 +160,10 @@
                     (empty? continuation)
                     (apply runtime-match (conj continuation (assoc environment pattern target))))))
 
-  (compile-match [pattern target] true))
+  (compile-match [pattern target]
+                 (if (::unquote (meta pattern))
+                  `(runtime-match ~(qualify pattern) ~target nil nil)
+                   true)))
 
 (extend-type nil
   IMatchable
@@ -183,14 +189,19 @@
   [pattern]
   (condp apply [pattern]
     seq?
-    (let [i (.indexOf pattern '&)
-          pattern (if-not (neg? i)
-                    (concat (take i pattern)
-                            (cons
-                             (with-meta (nth pattern (inc i)) {::... true})
-                             (drop (+ i 2) pattern)))
-                    pattern)]
-      (map precompile pattern))
+    (cond
+      (= (first pattern) `unquote)
+      (with-meta (second pattern) {::unquote true})
+
+      :else
+      (let [i (.indexOf pattern '&)
+            pattern (if-not (neg? i)
+                      (concat (take i pattern)
+                              (cons
+                               (with-meta (nth pattern (inc i)) {::... true})
+                               (drop (+ i 2) pattern)))
+                      pattern)]
+        (map precompile pattern)))
 
     vector?
     (let [i (.indexOf pattern '&)
@@ -257,6 +268,7 @@
   (loop [sentinel (Object.)
          m form
          ks (seq path)]
+    ; (println m)
     (if (and (seq? m) (= 'and (first m)))
       (recur sentinel (last m) ks)
       (if ks
@@ -267,7 +279,7 @@
             (cond
               (= 'and (first m))
               (recur sentinel (last m) ks)
-              (#{'quote `unquote} (first m))
+              (#{'quote} (first m))
               nil
               :else
               (let [m (nth m (first ks))]
@@ -428,14 +440,21 @@
 
 (defn define-fn
   [name]
-  (let [impls (atom [])
+  (let [impls (atom {})
         get-fn (fn [& args]
                  (let [args (vec args)]
                    (second (first (filter (fn [[p f]] (matches? p args))
                                           (reverse (sort-by (fn [[p f]] (specificity p)) @impls)))))))]
     (reify
       IDefine
-      (add-impl [this pattern f] (swap! impls conj [pattern f]))
+      (add-impl [this pattern f]
+                (let [pattern (clojure.walk/postwalk
+                               (fn [x]
+                                 (if (-> x meta ::unquote)
+                                   (qualify x)
+                                   x))
+                               (precompile pattern))]
+                  (swap! impls conj [pattern f])))
       (impls [this] @impls)
       clojure.lang.IFn
       (invoke [this]
@@ -520,41 +539,48 @@
 
 (def get-define-fn (memoize define-fn))
 
-(defn qualify
-  [sym]
-  (symbol (name (ns-name *ns*)) (name sym)))
+(defn define*
+  [name & [d & ds :as all]]
+  (if-not (seq all)
+    nil
+    (cond
+      (seq? d)
+      (cons
+       `(define* ~name ~(first d) (cons `do ~(rest d)))
+       `(define* ~ds))
+
+      (vector? d)
+      (let [formals d
+            body (first ds)
+            actuals
+            (if-not (neg? (.indexOf formals '&))
+              (concat (repeatedly (- (count formals) 2) gensym) ['& (gensym)])
+              (repeatedly (count formals) gensym))]
+        (cons
+         `(let [f# (get-define-fn '~name)]
+            (def ~(symbol (clojure.core/name name)) f#)
+            (add-impl f# '~formals
+                      (fn [~@actuals]
+                        (match [~@(remove #{'&} actuals)]
+                               [~@(remove #{'&} formals)]
+                               ~body)))
+            nil)
+         (apply define* name (rest ds))))
+
+      :else (throw (Exception. "Malformed define")))))
 
 (defmacro define
   ([name] `(get-define-fn '~(qualify name)))
-  ([name & df]
-   (cond
-     (every? seq? df)
-     (cons
-      `do
-      (map
-       (fn [df]
-         `(define ~name ~@df))
-       df))
-
-     (vector? (first df))
-     (let [formals (first df)
-           body (rest df)
-           actuals
-           (if-not (neg? (.indexOf formals '&))
-             (concat (repeatedly (- (count formals) 2) gensym) ['& (gensym)])
-             (repeatedly (count formals) gensym))]
-       `(let [f# (get-define-fn '~(qualify name))]
-          (add-impl f# '~formals (fn [~@actuals] (match [~@(remove #{'&} actuals)] [~@(remove #{'&} formals)] (do ~@body))))
-          (def ~name f#)))
-
-     :else (throw (Exception. "Malformed define")))))
+  ([name & ds]
+   (cons `do (apply define* (qualify name) ds))))
 
 
 
-(define fibb [0] 1)
-(define fibb [1] 1)
-; (define fibb [!neg?] (throw (Exception. "Undefined fibbonacci for negative input")))
-(define fibb [n] (+ (fibb (- n 1)) (fibb (- n 2))))
+
+; (define fibb
+;   [0] 1
+;   [1] 1
+;   [n] (+ (fibb (- n 1)) (fibb (- n 2))))
 ;
 ;
 ; (defn fizzbuzz

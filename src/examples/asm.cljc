@@ -7,6 +7,7 @@
 (data Expr
       (Mrk n)
       (Bne x y mrk)
+      (Be x y mrk)
       (Mov reg value)
       (Add x y)
       (Mul x y)
@@ -34,6 +35,14 @@
 
   ([(~Bne (~Reg x) (~Reg y) (~Lit mrk))]
    (when-not (= ($ x) ($ y))
+     (mov "c" (get marks mrk))))
+
+  ([(~Be (~Reg x) (~Lit y) (~Lit mrk))]
+   (when (= ($ x) y)
+     (mov "c" (get marks mrk))))
+
+  ([(~Be (~Reg x) (~Reg y) (~Lit mrk))]
+   (when (= ($ x) ($ y))
      (mov "c" (get marks mrk))))
 
   ([(~Mov (~Reg r) (~Lit v))]
@@ -91,6 +100,8 @@
 (define parse-line
   ([("bne" x y mrk)]
    (Bne x y mrk))
+  ([("be" x y mrk)]
+   (Be x y mrk))
   ([("add" x y)]
    (Add x y))
   ([("neg" x)]
@@ -121,7 +132,7 @@
          (map parse-line)
          (vector marks))))
 
-(def ex
+(def fibb
   (apply str
     (interpose \newline
                ["mov $0 1"
